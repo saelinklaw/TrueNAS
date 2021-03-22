@@ -1,0 +1,56 @@
+Source: truenas
+Section: admin
+Priority: optional
+Maintainer: William Grzybowski <william@grzy.org>
+Build-Depends: debhelper-compat (= 12)
+Standards-Version: 4.4.0
+Homepage: http://www.truenas.com
+
+Package: truenas
+Architecture: all
+Depends: acl,
+         cifs-utils,
+         collectd,
+         cpuid,
+         docker-ce,
+         docker-compose,
+         gdb,
+         glusterfs-server,
+         inadyn,
+         keepalived,
+         intel-pcm,
+         ladvd,
+         libnginx-mod-http-uploadprogress,
+         libvirt-daemon-system,
+         man-db,
+         manpages,
+         mc,
+         middlewared,
+         minio,
+         net-tools,
+         nfs-ganesha,
+         nfs-ganesha-gluster,
+         nfs-ganesha-vfs,
+         nginx,
+         openssh-server,
+         openvpn,
+         proftpd,
+         python3-midcli,
+         truenas-samba,
+         snmpd,
+         sudo,
+         systemd-coredump,
+         tftpd-hpa,
+         tmux,
+         truenas-binaries,
+         truenas-webui,
+         usrmerge,
+# Wireguard needs to be fixed because it needs extra dependencies to build the module during install
+# We should likely build the modules into the package and not use dkms
+#        wireguard,
+         zsh,
+         ${misc:Depends}
+Description: Main package for TrueNAS
+ This package is supposed to hold all the dependencies required
+ to build TrueNAS as well as set the correction version so other
+ software can rely on.

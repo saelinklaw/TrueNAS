@@ -1,0 +1,107 @@
+.form-ex-flex-container {
+    padding: 7px;
+}
+
+.form-explorer {
+    margin-bottom: 10px;
+    width: 90%;
+}
+
+.form-element.form-explorer{
+  //background: var(--bg1);
+}
+
+.tbody{
+  display: table;
+  width: 100%;
+  border: solid 1px var(--lines);
+}
+.tr{
+  display: table-row;
+  border-bottom: var(--lines);
+}
+
+.td{
+  display: table-cell;
+  vertical-align: middle;
+}
+
+#box1 {
+  text-align: center;
+  padding-bottom: 2px;
+}
+
+#box2 {
+    width: 87%;
+}
+
+#box2 input{ padding-bottom: 4px; }
+
+.tree-container{
+  border-left: solid 1px var(--lines);
+  border-right: solid 1px var(--lines);
+  border-bottom: solid 1px var(--lines);
+}
+
+.form-ex-folder {
+    font-size: 36px;
+    position: relative;
+    top: 10px;
+
+    &:hover {
+        cursor: pointer;
+    }
+}
+
+#form-ex-input {
+    width: 100%;
+}
+
+.dataset-subtitle {
+    background: var(--primary);
+    color: white;
+    display: inline;
+    padding: 2px 5px;
+    border-radius: 4px;
+    margin-left: 5px;
+}
+
+@media screen and (max-width: 768px) {
+    .form-ex-flex-container {
+        display: flex;
+        flex-direction: column;
+        margin-left: -10px;
+    }
+
+    .form-explorer {
+        padding: 3px 10px 10px 10px;
+        margin-bottom: 20px;
+    }
+
+    #box1 {
+      order: 2;
+    }
+    #box2 {
+      margin-left: 0;
+      margin-top: 8px;
+      width: 100%;
+      order: 1
+    }
+
+    #box3 {
+        order: 3;
+    }
+}
+
+mat-icon.explorer-folder {
+    font-size: 24px;
+}
+
+.form-explorer textarea.mat-input-element {
+  height: auto !important;
+  min-height: 33px !important;
+  border: 0;
+  padding: 9px;
+  line-height: normal !important;
+  margin: 0;
+}

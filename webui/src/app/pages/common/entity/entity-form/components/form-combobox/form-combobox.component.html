@@ -1,0 +1,58 @@
+<div id="{{config.name}}" class="dynamic-field form-select form-element form-combobox" [formGroup]="group" [ngClass]="fieldShow" [class.has-tooltip]="config.tooltip" *ngIf="!config['isHidden']"
+ix-auto ix-auto-type="combobox" ix-auto-identifier="{{config.placeholder}}">
+  <div>
+    <div class="label-container">
+      <label class="label input-select">
+        {{config.placeholder | translate}}
+        <span *ngIf="config.required">*</span>
+        <tooltip *ngIf="config.tooltip" [header]="config.placeholder" [message]="config.tooltip" [position]="config.tooltipPosition ? config.tooltipPosition : null"></tooltip>
+      </label>
+    </div>
+
+    <mat-form-field *ngIf="config.inputType != 'file' else elseBlock">
+      <div class="input-container">
+        <span *ngIf="config.searchable" class="searchable"><mat-icon>search</mat-icon></span>
+      <input [ngStyle]="{'padding-left': config.searchable ? '2rem' : '','padding-right': hasValue() ? '2rem': ''}" matInput [type]="config.inputType ? config.inputType : 'text'"
+        list="options"
+		  	[placeholder]="config.placeholder | translate"
+		  	[attr.value]="config.value"
+		  	[formControlName]="config.name"
+		  	[readonly]="config.readonly"
+        [required]="config.required"
+        (keyup)="updateSearchOptions($event.target.value)"
+        [matAutocomplete]="autoComplete"
+        [(ngModel)]="searchText"
+      >
+        <span *ngIf="hasValue() && !config.readonly" class="reset-input">
+					<mat-icon (click)="resetInput()" role="img" fontSet="mdi-set" fontIcon="mdi-close-circle"></mat-icon>
+				</span>
+        </div>
+       <mat-autocomplete #autoComplete="matAutocomplete" (opened)="onOpenDropdown()">
+        <mat-option *ngFor="let option of config.searchOptions" [value]="option.value"
+          ix-auto ix-auto-type="option" ix-auto-identifier="{{option.label}}" [class.text-wrap]="config.enableTextWrapForOptions" class="{{option.sticky ? 'sticky-' + option.sticky : ''}}">
+          <span>{{ option.label }}</span>
+         </mat-option>
+       </mat-autocomplete>
+    </mat-form-field>
+    <mat-button mat-icon-button id="{{config.name}}-select" type="button" [matMenuTriggerFor]="options"
+      ix-auto ix-auto-type="button" ix-auto-identifier="{{config.name}}" (menuOpened)="onOpenMenu()">
+      <mat-icon>arrow_drop_down</mat-icon>
+    </mat-button>
+    <mat-menu #options [class]="'combo-box-menu'">
+      <ng-container *ngFor="let option of config.options">
+        <button mat-menu-item (click)="onChangeOption(option.value)"
+          ix-auto ix-auto-type="option" ix-auto-identifier="{{option.label}}" 
+          [class.text-wrap]="config.enableTextWrapForOptions" 
+          class="{{option.sticky ? 'sticky-' + option.sticky : ''}}">
+          <span>{{ option.label }}</span>
+        </button>
+      </ng-container>
+    </mat-menu>
+  </div>
+  <div class="margin-for-error">
+    <form-errors [control]="group.controls[config.name]" [config]="config"></form-errors>
+    <mat-error *ngIf="config['hasErrors']"><div [innerHTML]="config['errors']"></div></mat-error>
+    <mat-error *ngIf="config.warnings"><div [innerHTML]="config.warnings | translate"></div></mat-error>
+  </div>
+
+</div>

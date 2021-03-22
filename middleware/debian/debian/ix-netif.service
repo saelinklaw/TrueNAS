@@ -1,0 +1,20 @@
+[Unit]
+Description=Setup TrueNAS Network
+DefaultDependencies=no
+
+Before=network-pre.target
+
+After=middlewared.service
+Before=local-fs.target
+Conflicts=systemd-networkd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-midclt -t 60 call failover.internal_interface.pre_sync
+ExecStart=-midclt -t 120 call interface.sync true
+ExecStartPost=midclt call etc.generate_checkpoint interface_sync
+StandardOutput=null
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=Generate TrueNAS /etc files
+DefaultDependencies=no
+
+Before=network-pre.target
+
+After=middlewared.service
+Before=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=300
+ExecStart=midclt call -job certificate.dhparam_setup
+ExecStart=midclt call etc.generate_checkpoint initial
+StandardOutput=null
+
+[Install]
+WantedBy=multi-user.target
