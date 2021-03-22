@@ -1,0 +1,250 @@
+#-
+# Copyright 2010-2015 iXsystems, Inc.
+# All rights reserved
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted providing that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+# IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+#
+#####################################################################
+
+.if exists(build/hooks/Makefile)
+.include "build/hooks/Makefile"
+.endif
+
+.ifdef SCRIPT
+RELEASE_LOGFILE?=${SCRIPT}
+.else
+RELEASE_LOGFILE?=${BE_ROOT}/release.build.log
+.endif
+
+.if defined(CHANGELOG)
+.export CHANGELOG
+.endif
+
+all: check-root build
+
+.PHONY: world build packages checkout update dumpenv clean release ports tests
+
+check-root:
+	@[ `id -u` -eq 0 ] || ( echo "Sorry, you must be running as root to build this."; exit 1 )
+
+build: portsjail ports world debug packages images
+
+world:
+	@${BUILD_TOOLS}/install-world.py
+	@${BUILD_TOOLS}/early-customize.py
+	@${BUILD_TOOLS}/install-ports.py
+	@${BUILD_TOOLS}/customize.py
+
+packages:
+	@${BUILD_TOOLS}/build-packages.py
+
+checkout:
+	@${BUILD_TOOLS}/checkout.py
+	@${BUILD_TOOLS}/update-release-info.py
+
+update:
+	@git pull
+	@${BUILD_TOOLS}/checkout.py
+	@${BUILD_TOOLS}/update-release-info.py
+
+buildenv:
+	@sh
+
+dumpenv:
+	@${BUILD_TOOLS}/dumpenv.py
+
+clean:
+.if defined(ZPOOL)
+	zfs destroy -r ${ZPOOL}${ZROOTFS}/data || true
+	zfs destroy -r ${ZPOOL}${ZROOTFS}/jail || true
+.endif
+	chflags -R 0 ${BE_ROOT}/objs
+	rm -rf ${BE_ROOT}/objs
+	rm -rf ${BE_ROOT}/release
+	rm -rf ${BE_ROOT}/release.build.log
+
+clean-packages:
+	find ${OBJDIR}/ports -type f -delete
+
+clean-package:
+.if defined(p)
+	find ${OBJDIR}/ports -name "${p}*" | xargs rm -fr
+.else
+	@echo "Clean a single package from object tree"
+	@echo ""
+	@echo "Usage:  ${MAKE} ${.TARGET} p=[package name]"
+	@echo ""
+	@echo "Examples:"
+	@echo "        ${MAKE} ${.TARGET} p=freenas-ui"
+	@echo "        ${MAKE} ${.TARGET} p=netatalk"
+.endif
+
+clean-ui-package:
+	${MK} clean-package p=freenas-10gui
+	rm -rf objs/os-base/*/gui-dest
+
+clean-freenas-packages: clean-ui-package
+	@${MK} clean-package p=freenas
+	@${MK} clean-package p=py34-freenas
+	@${MK} clean-package p=py34-fnutils
+	@${MK} clean-package p=py34-libzfs
+	@${MK} clean-package p=py34-bsd
+	@${MK} clean-package p=py34-netif
+	@${MK} clean-package p=py34-cam
+	@${MK} clean-package p=py34-ws4py
+	@${MK} clean-package p=py34-SMART
+	@${MK} clean-package p=py34-ipfs-api
+	@${MK} clean-package p=nss-freenas
+	@${MK} clean-package p=pam-freenas
+	@${MK} clean-package p=iocage-devel
+
+cleandist:
+	chflags -R 0 ${BE_ROOT}
+	rm -rf ${BE_ROOT}
+
+save-build-env:
+	@${BUILD_TOOLS}/save-build-env.py
+
+sync:
+.if defined (dir)
+	rsync -avl \
+		--rsync-path="sudo rsync" \
+		--delete \
+		--exclude '.git-repo-setting' \
+		--include '_BE/freenas' \
+		--exclude '_BE/*' \
+		--exclude '.git' \
+		--exclude '.idea' . ${host}:${dir}/
+.else
+	@echo "Error: Target directory is not defined!"
+.endif
+
+remote: sync
+	ssh -o StrictHostKeyChecking=no -t ${host} sudo make -C ${dir} ${target}
+
+reinstall-latest:
+	@${BUILD_TOOLS}/reinstall-package.py install_latest ${host}
+
+reinstall-package:
+	@${BUILD_TOOLS}/reinstall-package.py ${host} ${p}
+
+freenas: release
+release:
+	@echo "Doing executing target $@ on host: `hostname`"
+	@echo "Build directory: `pwd`"
+	@${MK} build
+	@if [ "${PRODUCTION}" == "yes" -o "${SAVE_DEBUG}" == "yes" ]; then \
+		${BUILD_TOOLS}/save-build-env.py; \
+	fi
+	@${BUILD_TOOLS}/create-release-distribution.py
+	@${BUILD_TOOLS}/create-upgrade-distribution.py
+
+release-push: update-push
+	@${BUILD_TOOLS}/post-to-storage.py
+	@if [ "${INTERNAL_UPDATE}" != "YES" -a "${INTERNAL_UPDATE}" != "yes" ]; then \
+		${BUILD_TOOLS}/post-to-download.py; \
+	fi
+
+update-push:
+	@${BUILD_TOOLS}/post-to-upgrade.py
+
+update-rollback:
+	ssh sef@update-master.freenas.org freenas-release rollback ${TRAIN}
+
+changelog:
+	build/tools/create_redmine_changelog.py -k ~/redmine-key  -p "freenas 10" -t RELEASE -s "Build Testing" > ChangeLog
+	@[ -s ChangeLog ] || rm ChangeLog
+
+archive:	release
+.if !defined(ARCHIVE)
+	@echo "ARCHIVE location must be defined" 1>&2
+	false
+.endif
+.if !defined(RELEASEDB)
+	@echo "RELEASEDB must be defined" 1>&2
+	false
+.endif
+	/usr/local/bin/freenas-release -P ${PRODUCT} \
+		-D ${RELEASEDB} --archive ${ARCHIVE} \
+		-K ${FREENAS_KEYFILE} \
+		add ${BE_ROOT}/release/LATEST
+
+rebuild: checkout all
+	@${BUILD_TOOLS}/create-release-distribution.py
+
+cdrom:
+	@${BUILD_TOOLS}/create-iso.py
+
+images: cdrom
+
+# intentionally split up to prevent abuse/spam
+BUILD_BUG_DOMAIN?=ixsystems.com
+BUILD_BUG_USER?=build-bugs
+BUILD_BUG_EMAIL?=${BUILD_BUG_USER}@${BUILD_BUG_DOMAIN}
+
+build-bug-report:
+	mail -s "build fail for $${SUDO_USER:-$$USER}" ${BUILD_BUG_EMAIL} < \
+		${RELEASE_LOGFILE}
+
+tag:
+	@${BUILD_TOOLS}/apply-tag.py ${tag}
+
+tests:
+	@${MK} cdrom UNATTENDED_CONFIG=tests/freenas/install.conf
+	@env PYTHONPATH=${BUILD_ROOT}/build/lib python3.4 ${BUILD_ROOT}/tests/freenas/run.py
+
+ports: check-root
+	@${BUILD_TOOLS}/build-ports.py
+
+os:
+	@${BUILD_TOOLS}/build-os.py
+
+os-tests:
+	@${BUILD_TOOLS}/run-os-tests.py
+
+os-playground:
+	@PLAYGROUND=yes ${BUILD_TOOLS}/run-os-tests.py
+
+os-ssh:
+	@START_SSH=yes ${BUILD_TOOLS}/run-os-tests.py
+
+os-telnet:
+	@START_TELNET=yes ${BUILD_TOOLS}/run-os-tests.py
+
+portsjail: os
+	@${BUILD_TOOLS}/install-jail.py
+
+profiles:
+	@${BUILD_TOOLS}/profiles.py
+
+select-profile:
+	@${BUILD_TOOLS}/select-profile.py ${name}
+
+debug:
+	@${BUILD_TOOLS}/build-debug.py
+
+api-docs:
+	@env CHECKOUT_ONLY="freenas" ${BUILD_TOOLS}/checkout.py
+	(make -C ${API_PATH}/api html)
+
+clean-docs:
+	make -C ${API_PATH}/api clean

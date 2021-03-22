@@ -1,0 +1,48 @@
+### SublimeText ###
+*.sublime-workspace
+
+### PyCharm ###
+.idea
+
+### OSX ###
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Files that might appear on external disk
+.Spotlight-V100
+.Trashes
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+### Windows ###
+# Windows image file caches
+Thumbs.db
+ehthumbs.db
+
+# Folder config file
+Desktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Python files
+*.pyc
+
+### PROJECT SETTINGS ###
+_BE/
+.profile-setting
+.git-ref-path
+
+# Exlude compiled Sphinx docs
+/docs/*/_build/
+
+
+# Any and all logs
+*.log
+
