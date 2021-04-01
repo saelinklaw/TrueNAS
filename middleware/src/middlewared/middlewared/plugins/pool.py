@@ -2868,7 +2868,8 @@ class PoolDatasetService(CRUDService):
                     dataset[i]['value'] = method(dataset[i]['value'])
             del dataset['properties']
 
-            dataset['locked'] = dataset['encrypted'] and not dataset['key_loaded']
+            if all(k in dataset for k in ('encrypted', 'key_loaded')):
+                dataset['locked'] = dataset['encrypted'] and not dataset['key_loaded']
 
             if retrieve_children:
                 rv = []
@@ -2972,7 +2973,7 @@ class PoolDatasetService(CRUDService):
         if '/' not in data['name']:
             verrors.add('pool_dataset_create.name', 'You need a full name, e.g. pool/newdataset')
         else:
-            parent_ds = await self.middleware.call('pool.dataset.query', [('id', '=', data['name'].rsplit('/', 1)[0])])
+            parent_ds = await self.middleware.call('pool.dataset.query', [('id', '=', data['name'].rsplit('/', 1)[0])], {'extra': {'retrieve_children': False}})
             await self.__common_validation(verrors, 'pool_dataset_create', data, 'CREATE', parent_ds)
 
         verrors.check()
@@ -3230,7 +3231,8 @@ class PoolDatasetService(CRUDService):
         if parent is None:
             parent = await self.middleware.call(
                 'pool.dataset.query',
-                [('id', '=', data['name'].rsplit('/', 1)[0])]
+                [('id', '=', data['name'].rsplit('/', 1)[0])],
+                {'extra': {'retrieve_children': False}}
             )
 
         if await self.is_internal_dataset(data['name']):

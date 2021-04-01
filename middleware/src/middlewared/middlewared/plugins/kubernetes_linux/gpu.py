@@ -1,4 +1,7 @@
+import os
+
 from middlewared.service import Service
+from middlewared.utils import run
 
 
 GPU_CONFIG = {
@@ -109,9 +112,8 @@ class KubernetesGPUService(Service):
             f'{d["metadata"]["namespace"]}_{d["metadata"]["name"]}': d
             for d in await self.middleware.call('k8s.daemonset.query')
         }
-
         supported_gpus = {'NVIDIA', 'INTEL'}
-        found_gpus = supported_gpus.intersection(set([gpu['vendor'] for gpu in gpus]))
+        found_gpus = supported_gpus.intersection(set([gpu['vendor'] for gpu in gpus if gpu['available_to_host']]))
         if found_gpus:
             to_remove = to_remove - found_gpus
             for gpu in found_gpus:
@@ -128,6 +130,9 @@ class KubernetesGPUService(Service):
                         'k8s.daemonset.create', {'namespace': config_metadata['namespace'], 'body': config}
                     )
 
+                if callable(getattr(self, f'setup_{gpu.lower()}_gpu', None)):
+                    await self.middleware.call(f'k8s.gpu.setup_{gpu.lower()}_gpu')
+
         for vendor in to_remove:
             config_metadata = GPU_CONFIG[vendor]['metadata']
             if f'{config_metadata["namespace"]}_{config_metadata["name"]}' not in daemonsets:
@@ -135,3 +140,18 @@ class KubernetesGPUService(Service):
             await self.middleware.call(
                 'k8s.daemonset.delete', config_metadata['name'], {'namespace': config_metadata['namespace']}
             )
+
+    async def setup_nvidia_gpu(self):
+        if os.path.exists('/dev/nvidia-uvm'):
+            return
+
+        for command in (
+            ['modprobe', 'nvidia-current-uvm'],
+            ['nvidia-modprobe', '-c0', '-u'],
+        ):
+            cp = await run(command, check=False)
+            if cp.returncode:
+                self.logger.error(
+                    'Failed to setup nvidia gpu, %r command failed with %r error', ' '.join(command), cp.stderr.decode()
+                )
+                break

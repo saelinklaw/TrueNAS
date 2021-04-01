@@ -1,3 +1,4 @@
+from middlewared.schema import accepts, Dict, Str
 from middlewared.service import CRUDService, filterable
 from middlewared.utils import filter_list
 
@@ -7,7 +8,8 @@ from .k8s import api_client
 class KubernetesPersistentVolumeClaimService(CRUDService):
 
     class Config:
-        namespace = 'k8s.persistent_volume_claim'
+        namespace = 'k8s.pvc'
+        namespace_alias = 'k8s.persistent_volume_claim'
         private = True
 
     @filterable
@@ -21,3 +23,14 @@ class KubernetesPersistentVolumeClaimService(CRUDService):
                 ],
                 filters, options
             )
+
+    @accepts(
+        Str('pvc_name'),
+        Dict(
+            'pvc_delete',
+            Str('namespace', required=True),
+        )
+    )
+    async def do_delete(self, pvc_name, options):
+        async with api_client() as (api, context):
+            await context['core_api'].delete_namespaced_persistent_volume_claim(pvc_name, options['namespace'])

@@ -1,4 +1,4 @@
-from middlewared.plugins.vm.devices import CDROM, DISK, PCI, RAW
+from middlewared.plugins.vm.devices import CDROM, DISK, DISPLAY, PCI, RAW
 from middlewared.utils import Nid
 
 from .supervisor_base import VMSupervisorBase
@@ -26,36 +26,27 @@ class VMSupervisor(VMSupervisorBase):
         return [create_element('os', attribute_dict={'children': children})]
 
     def devices_xml(self):
-        pptdev_choices = None
         boot_no = Nid(1)
         scsi_device_no = Nid(1)
         virtual_device_no = Nid(1)
         devices = []
-        for device in self.devices:
+        for device in filter(lambda d: d.is_available(), self.devices):
             if isinstance(device, (DISK, CDROM, RAW)):
                 if device.data['attributes'].get('type') == 'VIRTIO':
                     disk_no = virtual_device_no()
                 else:
                     disk_no = scsi_device_no()
                 device_xml = device.xml(disk_number=disk_no, boot_number=boot_no())
-            elif isinstance(device, PCI):
-                if pptdev_choices is None:
-                    pptdev_choices = self.middleware.call_sync('vm.device.passthrough_device_choices')
-                if device.passthru_device() not in pptdev_choices:
-                    self.middleware.call_sync(
-                        'alert.oneshot_create', 'PCIDeviceUnavailable', {
-                            'pci': device.passthru_device(), 'vm_name': self.vm_data['name']
-                        }
-                    )
-                    continue
-                else:
-                    self.middleware.call_sync('alert.oneshot_delete', 'PCIDeviceUnavailable', device.passthru_device())
-                device_xml = device.xml(passthrough_choices=pptdev_choices)
             else:
                 device_xml = device.xml()
             devices.extend(device_xml if isinstance(device_xml, (tuple, list)) else [device_xml])
 
-        devices.extend([create_element('serial', type='pty')])
+        if not any(isinstance(device, DISPLAY) for device in self.devices):
+            # We should add a video device if there is no display device configured because most by
+            # default if not all headless servers like ubuntu etc require it to boot
+            devices.append(create_element('video'))
+
+        devices.append(create_element('serial', type='pty'))
         return create_element('devices', attribute_dict={'children': devices})
 
     def cpu_xml(self):

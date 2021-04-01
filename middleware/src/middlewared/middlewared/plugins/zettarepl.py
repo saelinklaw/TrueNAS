@@ -188,7 +188,9 @@ class ZettareplProcess:
 
                 if isinstance(message, PeriodicSnapshotTaskStart):
                     with Client() as c:
-                        context = c.call("vmware.periodic_snapshot_task_begin", task_id, job=True)
+                        context = None
+                        if begin_context := c.call("vmware.periodic_snapshot_task_begin", task_id):
+                            context = c.call("vmware.periodic_snapshot_task_proceed", begin_context, job=True)
 
                     self.vmware_contexts[task_id] = context
 
@@ -303,8 +305,7 @@ class ZettareplService(Service):
                     event.set()
 
                 start_daemon_thread(target=target)
-                event.wait(5)
-                if self.process.is_alive():
+                if not event.wait(5):
                     self.logger.warning("Zettarepl was not joined in time, sending SIGKILL")
                     os.kill(self.process.pid, signal.SIGKILL)
 

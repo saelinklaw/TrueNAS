@@ -9,7 +9,7 @@ import libzfs
 
 from middlewared.schema import Any, Dict, Int, List, Str, Bool, accepts
 from middlewared.service import (
-    CallError, CRUDService, ValidationError, ValidationErrors, filterable, job,
+    CallError, CRUDService, ValidationError, ValidationErrors, filterable, job, private,
 )
 from middlewared.utils import filter_list, filter_getattrs, osc
 from middlewared.validators import ReplicationSnapshotNamingSchema
@@ -427,21 +427,44 @@ class ZFSDatasetService(CRUDService):
         private = True
         process_pool = True
 
-    def locked_datasets(self):
+    def locked_datasets(self, names=None):
+        query_filters = []
+        if names is not None:
+            names_optimized = []
+            for name in sorted(names, key=len):
+                if not any(name.startswith(f'{existing_name}/') for existing_name in names_optimized):
+                    names_optimized.append(name)
+
+            query_filters.append(['id', 'in', names_optimized])
+
+        result = self.flatten_datasets(self.query(query_filters, {
+            'extra': {
+                'flat': False,  # So child datasets are also queried
+                'properties': ['encryption', 'keystatus', 'mountpoint']
+            },
+        }))
+
+        post_filters = [['encrypted', '=', True]]
+
         try:
             about_to_lock_dataset = self.middleware.call_sync('cache.get', 'about_to_lock_dataset')
         except KeyError:
             about_to_lock_dataset = None
 
-        or_filters = [
+        post_filters.append([
             'OR', [['key_loaded', '=', False]] + (
                 [['id', '=', about_to_lock_dataset], ['id', '^', f'{about_to_lock_dataset}/']]
                 if about_to_lock_dataset else []
             )
+        ])
+
+        return [
+            {
+                'id': dataset['id'],
+                'mountpoint': dataset['properties'].get('mountpoint', {}).get('value'),
+            }
+            for dataset in filter_list(result, post_filters)
         ]
-        return self.query([['encrypted', '=', True], or_filters], {
-            'extra': {'properties': ['encryption', 'keystatus', 'mountpoint']}, 'select': ['id', 'mountpoint']
-        })
 
     def flatten_datasets(self, datasets):
         return sum([[deepcopy(ds)] + self.flatten_datasets(ds.get('children') or []) for ds in datasets], [])
@@ -458,11 +481,6 @@ class ZFSDatasetService(CRUDService):
         `query-options.extra.retrieve_children` is a boolean set to true by default. When set to true, will retrieve
         all children datasets which can cause a performance penalty. When set to false, will not retrieve children
         datasets which does not incur the performance penalty.
-
-        `query-options.extra.top_level_properties` is a list of properties which we will like to include in the
-        top level dict of dataset. It defaults to adding only mountpoint key keeping legacy behavior. If none are
-        desired in top level dataset, an empty list should be passed else if null is specified it will add mountpoint
-        key to the top level dict if it's present in `query-options.extra.properties` or it's null as well.
 
         `query-options.extra.properties` is a list of properties which should be retrieved. If null ( by default ),
         it would retrieve all properties, if empty, it will retrieve no property ( `mountpoint` is special in this
@@ -485,7 +503,6 @@ class ZFSDatasetService(CRUDService):
         """
         options = options or {}
         extra = options.get('extra', {}).copy()
-        top_level_props = None if extra.get('top_level_properties') is None else extra['top_level_properties'].copy()
         props = extra.get('properties', None)
         flat = extra.get('flat', True)
         user_properties = extra.get('user_properties', True)
@@ -501,11 +518,13 @@ class ZFSDatasetService(CRUDService):
         with libzfs.ZFS() as zfs:
             # Handle `id` filter specially to avoiding getting all datasets
             kwargs = dict(
-                props=props, top_level_props=top_level_props, user_props=user_properties, snapshots=snapshots,
-                retrieve_children=retrieve_children,
+                props=props, user_props=user_properties, snapshots=snapshots, retrieve_children=retrieve_children,
             )
-            if filters and len(filters) == 1 and list(filters[0][:2]) == ['id', '=']:
-                kwargs['datasets'] = [filters[0][2]]
+            if filters and filters[0][0] == 'id':
+                if filters[0][1] == '=':
+                    kwargs['datasets'] = [filters[0][2]]
+                if filters[0][1] == 'in':
+                    kwargs['datasets'] = filters[0][2]
 
             datasets = zfs.datasets_serialized(**kwargs)
             if flat:
@@ -1123,6 +1142,7 @@ class ZFSSnapshot(CRUDService):
             Bool('recursive', default=False),
             Bool('recursive_clones', default=False),
             Bool('force', default=False),
+            Bool('recursive_rollback', default=False),
         ),
     )
     def rollback(self, id, options):
@@ -1135,6 +1155,9 @@ class ZFSSnapshot(CRUDService):
         `options.recursive_clones` is just like `recursive` but will also destroy any clones.
 
         `options.force` will force unmount of any clones.
+
+        `options.recursive_rollback` will do a complete recursive rollback of each child snapshots for `id`. If
+        any child does not have specified snapshot, this operation will fail.
         """
         args = []
         if options['force']:
@@ -1144,6 +1167,22 @@ class ZFSSnapshot(CRUDService):
         if options['recursive_clones']:
             args += ['-R']
 
+        if options['recursive_rollback']:
+            dataset, snap_name = id.rsplit('@', 1)
+            datasets = set({
+                f'{ds["id"]}@{snap_name}' for ds in self.middleware.call_sync(
+                    'zfs.dataset.query', [['OR', [['id', '^', f'{dataset}/'], ['id', '=', dataset]]]]
+                )
+            })
+
+            for snap in filter(lambda sn: self.middleware.call_sync('zfs.snapshot.query', [['id', '=', sn]]), datasets):
+                self.rollback_impl(args, snap)
+
+        else:
+            self.rollback_impl(args, id)
+
+    @private
+    def rollback_impl(self, args, id):
         try:
             subprocess.run(
                 ['zfs', 'rollback'] + args + [id], text=True, capture_output=True, check=True,

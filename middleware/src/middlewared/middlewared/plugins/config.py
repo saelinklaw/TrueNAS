@@ -15,6 +15,7 @@ from middlewared.schema import Bool, Dict, accepts
 from middlewared.service import CallError, Service, job, private
 from middlewared.plugins.pwenc import PWENC_FILE_SECRET
 from middlewared.plugins.pool import GELI_KEYPATH
+from middlewared.utils.db import FREENAS_DATABASE
 from middlewared.utils.python import get_middlewared_dir
 
 CONFIG_FILES = {
@@ -22,7 +23,6 @@ CONFIG_FILES = {
     'geli': GELI_KEYPATH,
     'root_authorized_keys': '/root/.ssh/authorized_keys',
 }
-FREENAS_DATABASE = '/data/freenas-v1.db'
 NEED_UPDATE_SENTINEL = '/data/need-update'
 RE_CONFIG_BACKUP = re.compile(r'.*(\d{4}-\d{2}-\d{2})-(\d+)\.db$')
 UPLOADED_DB_PATH = '/data/uploaded.db'
@@ -287,6 +287,8 @@ class ConfigService(Service):
                     f'Please use Sync to Peer on the System/Failover page to perform a manual sync after reboot.',
                     CallError.EREMOTENODEERROR,
                 )
+
+        self.middleware.call_sync('boot.update_initramfs')
 
         if options['reboot']:
             self.middleware.run_coroutine(

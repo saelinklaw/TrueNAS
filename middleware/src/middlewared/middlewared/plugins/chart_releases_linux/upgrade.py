@@ -13,7 +13,7 @@ from middlewared.schema import Bool, Dict, Str
 from middlewared.service import accepts, CallError, job, periodic, private, Service, ValidationErrors
 
 from .schema import clean_values_for_upgrade
-from .utils import CONTEXT_KEY_NAME
+from .utils import CONTEXT_KEY_NAME, get_action_context
 
 
 class ChartReleaseService(Service):
@@ -66,13 +66,18 @@ class ChartReleaseService(Service):
         job.set_progress(40, 'Created snapshot for upgrade')
         # If a snapshot of the volumes already exist with the same name in case of a failed upgrade, we will remove
         # it as we want the current point in time being reflected in the snapshot
-        volumes_ds = os.path.join(release['dataset'], 'volumes/ix_volumes')
-        snap_name = f'{volumes_ds}@{release["version"]}'
-        if await self.middleware.call('zfs.snapshot.query', [['id', '=', snap_name]]):
-            await self.middleware.call('zfs.snapshot.delete', snap_name, {'recursive': True})
+        # TODO: Remove volumes/ix_volumes check in next release as we are going to do a recursive snapshot
+        #  from parent volumes ds moving on
+        for filesystem in ('volumes', 'volumes/ix_volumes'):
+            volumes_ds = os.path.join(release['dataset'], filesystem)
+            snap_name = f'{volumes_ds}@{release["version"]}'
+            if await self.middleware.call('zfs.snapshot.query', [['id', '=', snap_name]]):
+                await self.middleware.call('zfs.snapshot.delete', snap_name, {'recursive': True})
 
         await self.middleware.call(
-            'zfs.snapshot.create', {'dataset': volumes_ds, 'name': release['version'], 'recursive': True}
+            'zfs.snapshot.create', {
+                'dataset': os.path.join(release['dataset'], 'volumes'), 'name': release['version'], 'recursive': True
+            }
         )
 
         if release['update_available']:
@@ -110,11 +115,13 @@ class ChartReleaseService(Service):
         if not release['update_available'] and not release['container_images_update_available']:
             raise CallError('No update is available for chart release', errno=errno.ENOENT)
 
-        latest_version = release['human_version']
+        latest_version = release['chart_metadata']['version']
+        latest_human_version = release['human_version']
         changelog = None
         if release['update_available']:
             catalog_item = self.middleware.call_sync('chart.release.get_version', release, options)
-            latest_version = catalog_item['human_version']
+            latest_version = catalog_item['version']
+            latest_human_version = catalog_item['human_version']
             changelog = catalog_item['changelog']
 
         return {
@@ -122,6 +129,7 @@ class ChartReleaseService(Service):
                 k: v for k, v in release['resources']['container_images'].items() if v['update_available']
             },
             'latest_version': latest_version,
+            'latest_human_version': latest_human_version,
             'changelog': changelog,
         }
 
@@ -206,6 +214,7 @@ class ChartReleaseService(Service):
         # Helm considers simple config change as an upgrade as well, and we have no way of determining the old/new
         # chart versions during helm upgrade in the helm template, hence the requirement for a context object.
         config[CONTEXT_KEY_NAME].update({
+            **get_action_context(release_name),
             'operation': 'UPGRADE',
             'isUpgrade': True,
             'upgradeMetadata': {

@@ -16,7 +16,9 @@ from middlewared.service import CallError, CRUDService, filterable, job, private
 from middlewared.utils import filter_list, get
 from middlewared.validators import Match
 
-from .utils import CHART_NAMESPACE_PREFIX, get_namespace, get_storage_class_name, Resources, run
+from .utils import (
+    CHART_NAMESPACE_PREFIX, CONTEXT_KEY_NAME, get_action_context, get_namespace, get_storage_class_name, Resources, run,
+)
 
 
 class ChartReleaseService(CRUDService):
@@ -100,6 +102,21 @@ class ChartReleaseService(CRUDService):
         for storage_class in await self.middleware.call('k8s.storage_class.query'):
             storage_classes[storage_class['metadata']['name']] = storage_class
 
+        persistent_volumes = collections.defaultdict(list)
+
+        # If the chart release was consuming any PV's, they would have to be manually removed from k8s database
+        # because of chart release reclaim policy being retain
+        for pv in await self.middleware.call(
+            'k8s.pv.query', [[
+                'spec.csi.volume_attributes.openebs\\.io/poolname', '^',
+                f'{os.path.join(k8s_config["dataset"], "releases")}/'
+            ]]
+        ):
+            dataset = pv['spec']['csi']['volume_attributes']['openebs.io/poolname']
+            rl = dataset.split('/', 4)
+            if len(rl) > 4:
+                persistent_volumes[rl[3]].append(pv)
+
         resources = {r.value: collections.defaultdict(list) for r in Resources}
         workload_status = collections.defaultdict(lambda: {'desired': 0, 'available': 0})
 
@@ -151,6 +168,7 @@ class ChartReleaseService(CRUDService):
 
             release_resources = {
                 'storage_class': storage_classes[get_storage_class_name(name)],
+                'persistent_volumes': persistent_volumes[name],
                 'host_path_volumes': await self.host_path_volumes(resources[Resources.POD.value][name]),
                 **{r.value: resources[r.value][name] for r in Resources},
             }
@@ -411,7 +429,6 @@ class ChartReleaseService(CRUDService):
         # 2) Copy chart version into release/charts dataset
         # 3) Install the helm chart
         # 4) Create storage class
-        storage_class_name = get_storage_class_name(data['release_name'])
         try:
             job.set_progress(30, 'Creating chart release datasets')
 
@@ -450,20 +467,22 @@ class ChartReleaseService(CRUDService):
 
             job.set_progress(75, 'Installing Catalog Item')
 
+            new_values[CONTEXT_KEY_NAME].update({
+                **get_action_context(data['release_name']),
+                'operation': 'INSTALL',
+                'isInstall': True,
+            })
+
             # We will install the chart now and force the installation in an ix based namespace
             # https://github.com/helm/helm/issues/5465#issuecomment-473942223
             await self.middleware.call(
                 'chart.release.helm_action', data['release_name'], chart_path, new_values, 'install'
             )
 
-            storage_class = await self.middleware.call('k8s.storage_class.retrieve_storage_class_manifest')
-            storage_class['metadata']['name'] = storage_class_name
-            storage_class['parameters']['poolname'] = os.path.join(release_ds, 'volumes')
-            if await self.middleware.call('k8s.storage_class.query', [['metadata.name', '=', storage_class_name]]):
-                # It should not exist already, but even if it does, that's not fatal
-                await self.middleware.call('k8s.storage_class.update', storage_class_name, storage_class)
-            else:
-                await self.middleware.call('k8s.storage_class.create', storage_class)
+            await self.middleware.call(
+                'chart.release.create_update_storage_class_for_chart_release',
+                data['release_name'], os.path.join(release_ds, 'volumes')
+            )
         except Exception:
             # Do a rollback here
             # Let's uninstall the release as well if it did get installed ( it is possible this might have happened )
@@ -517,6 +536,12 @@ class ChartReleaseService(CRUDService):
         job.set_progress(25, 'Initial Validation complete')
 
         await self.perform_actions(context)
+
+        config[CONTEXT_KEY_NAME].update({
+            **get_action_context(chart_release),
+            'operation': 'UPDATE',
+            'isUpdate': True,
+        })
 
         await self.middleware.call('chart.release.helm_action', chart_release, chart_path, config, 'update')
 
@@ -604,6 +629,16 @@ class ChartReleaseService(CRUDService):
 
         k8s_config = await self.middleware.call('kubernetes.config')
         release_ds = os.path.join(k8s_config['dataset'], 'releases', release_name)
+
+        # If the chart release was consuming any PV's, they would have to be manually removed from k8s database
+        # because of chart release reclaim policy being retain
+        for pv in await self.middleware.call(
+            'k8s.pv.query', [
+                ['spec.csi.volume_attributes.openebs\\.io/poolname', '=', os.path.join(release_ds, 'volumes')]
+            ]
+        ):
+            await self.middleware.call('k8s.pv.delete', pv['metadata']['name'])
+
         if await self.middleware.call('zfs.dataset.query', [['id', '=', release_ds]]):
             if job:
                 job.set_progress(95, f'Removing {release_ds!r} dataset')

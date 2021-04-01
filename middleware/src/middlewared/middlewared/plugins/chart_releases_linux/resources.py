@@ -1,10 +1,11 @@
 import errno
+import os
 
 from middlewared.schema import Dict, Int, Str
 from middlewared.service import accepts, CallError, job, private, Service
 from middlewared.validators import Range
 
-from .utils import get_namespace
+from .utils import get_namespace, get_storage_class_name
 
 
 class ChartReleaseService(Service):
@@ -122,3 +123,53 @@ class ChartReleaseService(Service):
         return await self.middleware.call(
             'certificateauthority.query', [['revoked', '=', False], ['parsed', '=', True]]
         )
+
+    @private
+    async def retrieve_pv_pvc_mapping(self, release_name):
+        chart_release = await self.middleware.call(
+            'chart.release.query', [['id', '=', release_name]], {'get': True, 'extra': {'retrieve_resources': True}}
+        )
+        return await self.retrieve_pv_pvc_mapping_internal(chart_release)
+
+    @private
+    async def retrieve_pv_pvc_mapping_internal(self, chart_release):
+        mapping = {}
+        release_vol_ds = os.path.join(chart_release['dataset'], 'volumes')
+        zfs_volumes = {
+            zv['metadata']['name']: zv for zv in await self.middleware.call(
+                'k8s.zv.query', [['spec.poolName', '=', release_vol_ds]]
+            )
+        }
+
+        for pv in chart_release['resources']['persistent_volumes']:
+            claim_name = pv['spec'].get('claim_ref', {}).get('name')
+            if claim_name:
+                csi_spec = pv['spec']['csi']
+                volumes_ds = csi_spec['volume_attributes']['openebs.io/poolname']
+                if (
+                    os.path.join(chart_release['dataset'], 'volumes') != volumes_ds or
+                    csi_spec['volume_handle'] not in zfs_volumes
+                ):
+                    # We are only going to backup/restore pvc's which were consuming
+                    # their respective storage class and we have related zfs volume present
+                    continue
+
+                pv_name = pv['metadata']['name']
+                mapping[claim_name] = {
+                    'name': pv_name,
+                    'pv_details': pv,
+                    'dataset': os.path.join(volumes_ds, csi_spec['volume_handle']),
+                    'zv_details': zfs_volumes[csi_spec['volume_handle']],
+                }
+        return mapping
+
+    @private
+    async def create_update_storage_class_for_chart_release(self, release_name, volumes_path):
+        storage_class_name = get_storage_class_name(release_name)
+        storage_class = await self.middleware.call('k8s.storage_class.retrieve_storage_class_manifest')
+        storage_class['metadata']['name'] = storage_class_name
+        storage_class['parameters']['poolname'] = volumes_path
+        if await self.middleware.call('k8s.storage_class.query', [['metadata.name', '=', storage_class_name]]):
+            await self.middleware.call('k8s.storage_class.update', storage_class_name, storage_class)
+        else:
+            await self.middleware.call('k8s.storage_class.create', storage_class)

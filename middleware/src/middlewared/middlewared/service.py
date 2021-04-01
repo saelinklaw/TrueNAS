@@ -265,6 +265,7 @@ def service_config(klass, config):
         'datastore_prefix': '',
         'datastore_extend': None,
         'datastore_extend_context': None,
+        'datastore_primary_key': 'id',
         'event_register': True,
         'event_send': True,
         'service': None,
@@ -477,8 +478,9 @@ class CRUDService(ServiceChangeMixin, Service):
         options = await self.get_options(options)
 
         # In case we are extending which may transform the result in numerous ways
-        # we can only filter the final result.
-        if options['extend']:
+        # we can only filter the final result. Exception is when forced to use sql
+        # for filters for performance reasons.
+        if not options['force_sql_filters'] and options['extend']:
             datastore_options = options.copy()
             datastore_options.pop('count', None)
             datastore_options.pop('get', None)
@@ -536,7 +538,11 @@ class CRUDService(ServiceChangeMixin, Service):
         """
         Helper method to get an instance from a collection given the `id`.
         """
-        instance = await self.middleware.call(f'{self._config.namespace}.query', [['id', '=', id]])
+        instance = await self.middleware.call(
+            f'{self._config.namespace}.query',
+            [[self._config.datastore_primary_key, '=', id]],
+            {'force_sql_filters': True}
+        )
         if not instance:
             raise ValidationError(None, f'{self._config.verbose_name} {id} does not exist', errno.ENOENT)
         return instance[0]
@@ -628,11 +634,18 @@ class SharingTaskService(CRUDService):
     share_task_type = NotImplemented
 
     @private
-    async def sharing_task_extend_context(self, extra):
+    async def sharing_task_extend_context(self, rows, extra):
+        datasets = sum([
+            await self.middleware.call(f'{self._config.namespace}.sharing_task_datasets', row)
+            for row in rows
+        ], [])
+
         return {
-            'locked_datasets': await self.middleware.call('zfs.dataset.locked_datasets'),
-            'service_extend': (await self.middleware.call(self._config.datastore_extend_context, extra))
-            if self._config.datastore_extend_context else {}
+            'locked_datasets': await self.middleware.call('zfs.dataset.locked_datasets', datasets) if datasets else [],
+            'service_extend': (
+                await self.middleware.call(self._config.datastore_extend_context, rows, extra)
+                if self._config.datastore_extend_context else None,
+            ),
         }
 
     @private
@@ -641,6 +654,10 @@ class SharingTaskService(CRUDService):
             verrors, self.middleware, f'{schema}.{self.path_field}', data.get(self.path_field), gluster_bypass=bypass,
         )
         return verrors
+
+    @private
+    async def sharing_task_datasets(self, data):
+        return [os.path.relpath(data[self.path_field], '/mnt')]
 
     @private
     async def sharing_task_determine_locked(self, data, locked_datasets):

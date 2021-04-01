@@ -81,7 +81,7 @@ class SMBPath(enum.Enum):
     LEGACYPRIVATE = ('/root/samba/private', '/root/samba/private', 0o700, True)
     MSG_SOCK = ('/var/db/system/samba4/private/msg.sock', '/var/db/system/samba4/private/msg.sock', 0o700, False)
     RUNDIR = ('/var/run/samba4', '/var/run/samba', 0o755, True)
-    LOCKDIR = ('/var/lock', '/var/run/samba-lock', 0o755, True)
+    LOCKDIR = ('/var/run/samba4', '/var/run/samba-lock', 0o755, True)
     LOGDIR = ('/var/log/samba4', '/var/log/samba4', 0o755, True)
     IPCSHARE = ('/var/tmp', '/tmp', 0o1777, True)
 
@@ -750,6 +750,13 @@ class SharingSMBService(SharingService):
         datastore_prefix = 'cifs_'
         datastore_extend = 'sharing.smb.extend'
         cli_namespace = 'sharing.smb'
+
+    @private
+    async def sharing_task_datasets(self, data):
+        if data[self.path_field]:
+            return [os.path.relpath(data[self.path_field], '/mnt')]
+        else:
+            return []
 
     @private
     async def sharing_task_determine_locked(self, data, locked_datasets):

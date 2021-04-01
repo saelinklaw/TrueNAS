@@ -1,31 +1,21 @@
 #!/usr/bin/env python3
 import math
 import psutil
-import sqlite3
 
-from middlewared.plugins.config import FREENAS_DATABASE
 from middlewared.utils import osc
-
-
-def dict_factory(cursor, row):
-    d = {}
-    for idx, col in enumerate(cursor.description):
-        d[col[0]] = row[idx]
-    return d
+from middlewared.utils.db import query_config_table
 
 
 if __name__ == "__main__":
-    conn = sqlite3.connect(FREENAS_DATABASE)
-    conn.row_factory = dict_factory
-    c = conn.cursor()
-    c.execute("SELECT * FROM system_advanced")
-    advanced = {k.replace("adv_", ""): v for k, v in c.fetchone().items()}
+    advanced = query_config_table("system_advanced", prefix="adv_")
 
     # We need to allow tpm in grub as sedutil-cli requires it
-    # TODO: Please remove kernel flag to use cgroups v1 when upstream k3s has support for cgroups v2
+    # TODO: Please remove kernel flag to use cgroups v1 when nvidia device plugin starts working
+    #  with it ( https://github.com/NVIDIA/k8s-device-plugin/issues/235 )
     config = [
         'GRUB_DISTRIBUTOR="TrueNAS Scale"',
-        'GRUB_CMDLINE_LINUX_DEFAULT="libata.allow_tpm=1 systemd.unified_cgroup_hierarchy=0"',
+        'GRUB_CMDLINE_LINUX_DEFAULT="libata.allow_tpm=1 systemd.unified_cgroup_hierarchy=0 '
+        'amd_iommu=on iommu=pt kvm_amd.npt=1 kvm_amd.avic=1 intel_iommu=on"',
     ]
 
     terminal = ["console"]

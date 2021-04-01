@@ -1,5 +1,6 @@
 import asyncio
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, date, timezone, timedelta
 from middlewared.event import EventSource
 from middlewared.i18n import set_language
@@ -89,6 +90,7 @@ class SystemAdvancedModel(sa.Model):
     adv_syslog_tls_certificate_id = sa.Column(sa.ForeignKey('system_certificate.id'), index=True, nullable=True)
     adv_kmip_uid = sa.Column(sa.String(255), nullable=True, default=None)
     adv_kdump_enabled = sa.Column(sa.Boolean(), default=False)
+    adv_isolated_gpu_pci_ids = sa.Column(sa.JSON(), default=[])
 
 
 class SystemAdvancedService(ConfigService):
@@ -195,6 +197,21 @@ class SystemAdvancedService(ConfigService):
             await self.middleware.call('certificate.cert_services_validation', data['syslog_tls_certificate'],
                                        f'{schema}.syslog_tls_certificate')
 
+        if data['isolated_gpu_pci_ids']:
+            available = set([gpu['addr']['pci_slot'] for gpu in await self.middleware.call('device.get_gpus')])
+            provided = set(data['isolated_gpu_pci_ids'])
+            not_available = provided - available
+            if not_available:
+                verrors.add(
+                    f'{schema}.isolated_gpu_pci_ids',
+                    f'{", ".join(not_available)} GPU pci slots are not available or a GPU is not configured.'
+                )
+            if len(available - provided) < 1:
+                verrors.add(
+                    f'{schema}.isolated_gpu_pci_ids',
+                    'A minimum of 2 GPUs are required in the host to ensure that host has at least 1 GPU available.'
+                )
+
         return verrors, data
 
     @accepts(
@@ -226,6 +243,7 @@ class SystemAdvancedService(ConfigService):
             Str('syslogserver'),
             Str('syslog_transport', enum=['UDP', 'TCP', 'TLS']),
             Int('syslog_tls_certificate', null=True),
+            List('isolated_gpu_pci_ids', items=[Str('pci_id')]),
             update=True
         )
     )
@@ -243,6 +261,8 @@ class SystemAdvancedService(ConfigService):
 
         `consolemsg` is a deprecated attribute and will be removed in further releases. Please, use `consolemsg`
         attribute in the `system.general` plugin.
+
+        `isolated_gpu_pci_ids` is a list of PCI ids which are isolated from host system.
         """
         consolemsg = None
         if 'consolemsg' in data:
@@ -252,14 +272,14 @@ class SystemAdvancedService(ConfigService):
         config_data = await self.config()
         config_data['sed_passwd'] = await self.sed_global_password()
         config_data.pop('consolemsg')
-        original_data = config_data.copy()
+        original_data = deepcopy(config_data)
         config_data.update(data)
 
         verrors, config_data = await self.__validate_fields('advanced_settings_update', config_data)
         if verrors:
             raise verrors
 
-        if len(set(config_data.items()) ^ set(original_data.items())) > 0:
+        if config_data != original_data:
             if original_data.get('sed_user'):
                 original_data['sed_user'] = original_data['sed_user'].lower()
             if config_data.get('sed_user'):
@@ -340,6 +360,9 @@ class SystemAdvancedService(ConfigService):
                 # should be enough
                 await self.middleware.call('etc.generate', 'kdump')
                 await self.middleware.call('etc.generate', 'grub')
+
+            if osc.IS_LINUX and original_data['isolated_gpu_pci_ids'] != config_data['isolated_gpu_pci_ids']:
+                await self.middleware.call('boot.update_initramfs')
 
         if consolemsg is not None:
             await self.middleware.call('system.general.update', {'ui_consolemsg': consolemsg})

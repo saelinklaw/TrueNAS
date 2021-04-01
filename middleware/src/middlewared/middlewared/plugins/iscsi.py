@@ -514,13 +514,22 @@ class iSCSITargetExtentService(SharingService):
         datastore = 'services.iscsitargetextent'
         datastore_prefix = 'iscsi_target_extent_'
         datastore_extend = 'iscsi.extent.extend'
-        datastore_extend_context = 'iscsi.extent.extent_extend_context'
         cli_namespace = 'sharing.iscsi.extent'
+
+    @private
+    async def sharing_task_datasets(self, data):
+        if data['type'] == 'ZVOL':
+            if data['path'].startswith('zvol/'):
+                return [data['path'][5:]]
+            else:
+                return []
+
+        return await super().sharing_task_datasets(data)
 
     @private
     async def sharing_task_determine_locked(self, data, locked_datasets):
         if data['type'] == 'ZVOL':
-            return any(data['disk'][5:] == d['id'] for d in locked_datasets)
+            return any(data['path'][5:] == d['id'] for d in locked_datasets)
         else:
             return await super().sharing_task_determine_locked(data, locked_datasets)
 
@@ -672,28 +681,7 @@ class iSCSITargetExtentService(SharingService):
             data['rpm'] = 'Unknown'
 
     @private
-    async def extent_extend_context(self, extra):
-        context = {
-            'disks': {},
-            'pools': {
-                p['name']: {'disks': await self.middleware.call('zfs.pool.get_disks', p['name']), 'all_flash': False}
-                for p in await self.middleware.call('pool.query', [['is_decrypted', '=', True],
-                                                                   ['status', '!=', 'OFFLINE']])
-            }
-        }
-        disks_names = {}
-        for disk in await self.middleware.call('disk.query'):
-            disks_names[disk['devname']] = disk
-            context['disks'][disk['identifier']] = disk
-
-        for pool in filter(lambda p: context['pools'][p]['disks'], context['pools']):
-            data = context['pools'][pool]
-            if all(disks_names.get(d, {}).get('type') == 'SSD' for d in data['disks']):
-                data['all_flash'] = True
-        return context
-
-    @private
-    async def extend(self, data, context):
+    async def extend(self, data):
         extent_type = data['type'].upper()
         extent_rpm = data['rpm'].upper()
 
@@ -1186,7 +1174,7 @@ class iSCSITargetService(CRUDService):
             filters = [('name', '=', data['name'])]
             if old:
                 filters.append(('id', '!=', old['id']))
-            names = await self.middleware.call(f'{self._config.namespace}.query', filters)
+            names = await self.middleware.call(f'{self._config.namespace}.query', filters, {'force_sql_filters': True})
             if names:
                 verrors.add(f'{schema_name}.name', 'Target name already exists')
 
@@ -1199,7 +1187,7 @@ class iSCSITargetService(CRUDService):
                 filters = [('alias', '=', data['alias'])]
                 if old:
                     filters.append(('id', '!=', old['id']))
-                aliases = await self.middleware.call(f'{self._config.namespace}.query', filters)
+                aliases = await self.middleware.call(f'{self._config.namespace}.query', filters, {'force_sql_filters': True})
                 if aliases:
                     verrors.add(f'{schema_name}.alias', 'Alias already exists')
 
@@ -1339,7 +1327,8 @@ class iSCSITargetService(CRUDService):
     @private
     async def active_sessions_for_targets(self, target_id_list):
         targets = await self.middleware.call(
-            'iscsi.target.query', [['id', 'in', target_id_list]]
+            'iscsi.target.query', [['id', 'in', target_id_list]],
+            {'force_sql_filters': True},
         )
         check_targets = []
         global_basename = (await self.middleware.call('iscsi.global.config'))['basename']
@@ -1494,7 +1483,7 @@ class iSCSITargetToExtentService(CRUDService):
         if data.get('lunid') is None:
             lunids = [
                 o['lunid'] for o in await self.query(
-                    [('target', '=', target)], {'order_by': ['lunid']}
+                    [('target', '=', target)], {'order_by': ['lunid'], 'force_sql_filters': True}
                 )
             ]
             if not lunids:
@@ -1519,15 +1508,15 @@ class iSCSITargetToExtentService(CRUDService):
 
         if old_lunid != lunid and await self.query([
             ('lunid', '=', lunid), ('target', '=', target)
-        ]):
+        ], {'force_sql_filters': True}):
             verrors.add(
                 f'{schema_name}.lunid',
                 'LUN ID is already being used for this target.'
             )
 
         if old_target != target and await self.query([
-            ('target', '=', target), ('extent', '=', extent)]
-        ):
+            ('target', '=', target), ('extent', '=', extent)
+        ], {'force_sql_filters': True}):
             verrors.add(
                 f'{schema_name}.target',
                 'Extent is already in this target.'

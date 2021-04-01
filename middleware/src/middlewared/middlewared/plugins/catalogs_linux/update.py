@@ -31,10 +31,11 @@ class CatalogService(CRUDService):
         datastore = 'services.catalog'
         datastore_extend = 'catalog.catalog_extend'
         datastore_extend_context = 'catalog.catalog_extend_context'
+        datastore_primary_key = 'label'
         cli_namespace = 'app.catalog'
 
     @private
-    async def catalog_extend_context(self, extra):
+    async def catalog_extend_context(self, rows, extra):
         k8s_dataset = (await self.middleware.call('kubernetes.config'))['dataset']
         catalogs_dir = os.path.join('/mnt', k8s_dataset, 'catalogs') if k8s_dataset else f'{TMP_IX_APPS_DIR}/catalogs'
         return {
@@ -52,12 +53,21 @@ class CatalogService(CRUDService):
         })
         extra = context['extra']
         if extra.get('item_details'):
-            catalog['trains'] = await self.middleware.call(
-                'catalog.items', catalog['label'], {'cache': extra.get('cache', True)},
-            )
-            catalog['healthy'] = all(
-                app['healthy'] for train in catalog['trains'] for app in catalog['trains'][train].values()
-            )
+            try:
+                catalog['trains'] = await self.middleware.call(
+                    'catalog.items', catalog['label'], {'cache': extra.get('cache', True)},
+                )
+            except Exception:
+                # We do not want this to fail as it will block `catalog.query` otherwise. The error would
+                # already be logged as this is being called periodically as well.
+                catalog.update({
+                    'trains': {},
+                    'healthy': False,
+                })
+            else:
+                catalog['healthy'] = all(
+                    app['healthy'] for train in catalog['trains'] for app in catalog['trains'][train].values()
+                )
         return catalog
 
     @private
@@ -122,9 +132,12 @@ class CatalogService(CRUDService):
                 await self.common_validation(
                     {'trains': await self.middleware.call('catalog.get_trains', path)}, 'catalog_create', data
                 )
-
+            except CallError as e:
+                verrors.add('catalog_create.label', f'Failed to validate catalog: {e}')
             finally:
                 await self.middleware.run_in_thread(shutil.rmtree, path, ignore_errors=True)
+
+        verrors.check()
 
         await self.middleware.call('datastore.insert', self._config.datastore, data)
 

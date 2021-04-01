@@ -32,13 +32,13 @@ class PCI(Device):
         if cp.returncode:
             raise CallError(f'Unable to re-attach {self.passthru_device()} PCI device: {stderr.decode()}')
 
-    def is_available(self):
-        if osc.IS_LINUX:
-            device = self.middleware.call_sync('vm.device.passthrough_device', self.passthru_device())
-            if not device['error'] and not device['available']:
-                self.detach_device()
+    def pre_start_vm_device_setup_linux(self, *args, **kwargs):
+        device = self.get_details()
+        if not device['error'] and not device['available']:
+            self.detach_device()
 
-        return self.middleware.call_sync('vm.device.passthrough_device', self.passthru_device())['available']
+    def is_available(self):
+        return self.get_details()['available']
 
     def identity(self):
         return str(self.passthru_device())
@@ -62,17 +62,19 @@ class PCI(Device):
             except CallError:
                 self.middleware.logger.error('Failed to re-attach %s device', self.passthru_device(), exc_info=True)
 
+    def get_details(self):
+        return self.middleware.call_sync('vm.device.passthrough_device', self.passthru_device())
+
     def xml_linux(self, *args, **kwargs):
-        passthrough_choices = kwargs.pop('passthrough_choices')
-        addresses = passthrough_choices[self.passthru_device()]['iommu_group']['addresses']
+        address_info = {
+            k: hex(int(v)) for k, v in self.get_details()['capability'].items()
+            if k in ('domain', 'bus', 'slot', 'function')
+        }
+
         return create_element(
             'hostdev', mode='subsystem', type='pci', managed='yes', attribute_dict={
                 'children': [
-                    create_element('source', attribute_dict={
-                        'children': [
-                            create_element('address', **a) for a in addresses if all(a[k] for k in a)
-                        ]
-                    })
+                    create_element('source', attribute_dict={'children': [create_element('address', **address_info)]}),
                 ]
             }
         )
